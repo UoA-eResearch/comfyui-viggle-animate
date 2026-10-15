@@ -1,0 +1,12 @@
+# Models and extra node folders live on the /workspace volume, so they survive container updates.
+workspace:
+    base_path: /workspace
+    checkpoints: models/checkpoints
+    diffusion_models: models/diffusion_models
+    loras: models/loras
+    vae: models/vae
+    text_encoders: models/text_encoders
+    clip_vision: models/clip_vision
+    upscale_models: models/upscale_models
+    text_cond: models/text_cond
+    custom_nodes: custom_nodes

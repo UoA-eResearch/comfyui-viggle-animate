@@ -1,0 +1,6 @@
+# directory                  repository                                                commit
+ComfyUI-Viggle-Animate-H3    https://github.com/Saganaki22/ComfyUI-Viggle-Animate-H3.git   77425b6f955e98e96c5e0dc6ca199dc62e63ad8a
+ComfyUI-VideoHelperSuite     https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git   4d907bee61e92c2e65af3bd6383a4e4d356126d1
+ComfyUI-KJNodes              https://github.com/kijai/ComfyUI-KJNodes.git                  d3cfe21625e5170126ce06fbfcfe1d88108688c3
+ComfyUI-Crystools            https://github.com/crystian/ComfyUI-Crystools.git             2f18256c5b5063937106f29a8e0a7db3ae3869b7
+ComfyUI-KikoStats            https://github.com/ComfyAssets/ComfyUI-KikoStats.git          7ae6c9a335696b19411fd9b68f98b9e053f6c8cb

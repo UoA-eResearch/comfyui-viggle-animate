@@ -1,0 +1,24 @@
+# docker compose up -d      (then open http://localhost:8188; follow the first-start downloads with: docker compose logs -f)
+services:
+  viggle:
+    image: ghcr.io/uoa-eresearch/comfyui-viggle-animate:latest
+    build: .
+    ports:
+      - "8188:8188"
+    volumes:
+      - viggle:/workspace
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}               # for LTX-2.5: accept its licence on Hugging Face first
+      VIGGLE_VARIANT: ${VIGGLE_VARIANT:-auto}
+    shm_size: "16gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  viggle:

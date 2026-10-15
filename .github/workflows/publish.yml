@@ -1,0 +1,82 @@
+name: Build and publish the image
+
+# Pushes to main publish ghcr.io/<owner>/<repo>:latest (and :main, :sha-...); tags v1.2.3 publish :1.2.3 and :1.2.
+# Pull requests only build and test.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space (the image is about 12 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Image name (lowercase, as GHCR requires)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=comfyui-viggle-animate
+            org.opencontainers.image.description=ComfyUI with Viggle-Animate (video character replacement with lip-sync), ready to run
+            org.opencontainers.image.licenses=GPL-3.0-only
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: smoke-test:latest
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+
+      - name: Smoke test (CPU only) - ComfyUI starts and every node pack imports
+        run: |
+          docker run --rm --entrypoint python smoke-test:latest /opt/ComfyUI/main.py --cpu --quick-test-for-ci \
+            --disable-auto-launch 2>&1 | tee smoke.log
+          ! grep -E "IMPORT FAILED|Traceback" smoke.log
+          for n in ComfyUI-Viggle-Animate-H3 ComfyUI-VideoHelperSuite ComfyUI-KJNodes ViggleAudioPin; do
+            grep -q "$n" smoke.log || { echo "node pack $n did not load"; exit 1; }
+          done
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
