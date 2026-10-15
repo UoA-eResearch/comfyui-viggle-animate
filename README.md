@@ -99,6 +99,9 @@ from the disk cache after the first run:
   character holds the phone in the left hand") or change the seed; only the changed steps re-run.
 - Results are in `output/viggle/`, `output/ripple/` and `output/combined/`, each with a comparison video, with
   the original soundtrack.
+- After a run ComfyUI keeps the last model in GPU memory (up to ~90 GB with the full builds), which makes the next
+  run faster. On a GPU shared with other work, free it with
+  `curl -X POST http://localhost:8188/free -H 'Content-Type: application/json' -d '{"unload_models": true, "free_memory": true}'`.
 
 ## Using the API (scripts, queues)
 
