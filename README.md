@@ -13,7 +13,8 @@ and characters, and an API you can script against (jobs from several people queu
 - **Both together**: Viggle-Animate renders the character with lip-sync, Ripple the changed scene, and SAM 3.1
   lays one over the other.
 
-<!-- RESULT EXAMPLE -->
+(This page shows no example results on purpose: Viggle-Animate's licence does not allow its outputs to be
+displayed in some countries, and a public page is shown everywhere. Run the bundled examples to see them.)
 
 ## Quick start
 
@@ -46,8 +47,9 @@ Without `HF_TOKEN` the container still works, with the Viggle-Animate workflow o
   | 48 GB or more (A6000, L40S, RTX 6000 Ada) | int8 (47 GB) | ~86 GB / ~156 GB |
   | less | pruned int8 (21 GB) | ~60 GB / ~130 GB |
 
-  LTX-2.5 (22B, bf16) needs about 48 GB of GPU memory, or ComfyUI's partial offloading on smaller cards. Leave room
-  on the volume for your outputs too.
+  The thresholds are approximate: ComfyUI offloads what does not fit into GPU memory, which works but is slower.
+  On the example clips the three builds give very similar results. LTX-2.5 (22B, bf16) needs about 48 GB of GPU
+  memory, or offloading on smaller cards. Leave room on the volume for your outputs too.
 - 64 GB of system RAM or more is recommended (the models are large).
 
 ## What is inside
@@ -75,6 +77,18 @@ versions under another name.
 | `COMFYUI_ARGS` | - | Extra ComfyUI options, e.g. `--use-sage-attention` if you add SageAttention, `--lowvram`. |
 
 `docker-compose.yml` in this repository has the same setup for `docker compose up -d`.
+
+## Speed
+
+Measured on an RTX PRO 6000 Blackwell (96 GB), full bf16 models, for the 5 s example clips (121 frames), from
+pressing Run to the saved video. Each workflow loads its models one after the other (they do not fit together),
+from the disk cache after the first run:
+
+| Workflow | Time |
+|---|---|
+| Viggle-Animate | 90-125 s (int8 build: 80 s, pruned int8: 60 s) |
+| LTX Ripple | about 100 s |
+| Viggle-Animate + LTX Ripple | about 170 s |
 
 ## Tips
 

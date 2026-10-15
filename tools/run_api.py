@@ -45,6 +45,8 @@ def main():
     ap.add_argument("--extra", default=None, help="extra instructions for the first-frame edit (combined workflow: "
                                                   "the scene change; default: the workflow's own)")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--viggle-model", default=None,
+                    help="which Viggle-Animate build to use when the server has several: bf16, int8 or pruned")
     ap.add_argument("--out", default=".")
     a = ap.parse_args()
     host = a.host.rstrip("/")
@@ -64,6 +66,11 @@ def main():
     # the installed Viggle variant may differ from the file name in the graph: use what the server has
     models = json.load(_open(host + "/models/diffusion_models"))
     viggle = [m for m in models if "ref2va_viggle" in m]
+    if a.viggle_model:
+        want = {"bf16": "_bf16", "int8": "_viggle_int8", "pruned": "pruned_int8"}.get(a.viggle_model, a.viggle_model)
+        viggle = [m for m in viggle if want in m]
+        if not viggle:
+            raise SystemExit(f"no Viggle-Animate build matching {a.viggle_model!r} on the server")
     for node in graph.values():
         if node["class_type"] == "UNETLoader" and "ref2va_viggle" in node["inputs"]["unet_name"] and viggle:
             node["inputs"]["unet_name"] = viggle[0]
