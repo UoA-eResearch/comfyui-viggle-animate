@@ -10,6 +10,8 @@ and characters, and an API you can script against (jobs from several people queu
 - **[LTX Ripple](https://huggingface.co/WepeNerd/LTX-Ripple)** (an IC-LoRA for
   [LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5)) carries any edit of the first frame through the video:
   characters, scenery, light, style.
+- **Viggle-Animate, masked**: replaces one person and nothing else; the rest of every frame, other people
+  included, stays exactly as filmed (SAM 3.1 finds the person and the new character).
 - **Both together**: Viggle-Animate renders the character with lip-sync, Ripple the changed scene, and SAM 3.1
   lays one over the other.
 
@@ -26,14 +28,14 @@ displayed in some countries, and a public page is shown everywhere. Run the bund
    docker run -d --name viggle --gpus all -p 8188:8188 -v viggle:/workspace -e HF_TOKEN=hf_... ghcr.io/uoa-eresearch/comfyui-viggle-animate:latest
    ```
 
-3. Open <http://localhost:8188>, then **Workflows** (left sidebar), pick one of the three workflows and press
+3. Open <http://localhost:8188>, then **Workflows** (left sidebar), pick one of the four workflows and press
    **Run**. The example inputs are already selected.
 
 On first start the container downloads the models from Hugging Face into the `viggle` volume (about 175 GB with
 the full Viggle-Animate model, see below) while ComfyUI is already up. Follow it with `docker logs -f viggle`;
 when it prints `all models ready`, refresh the page. Later starts reuse the volume and take seconds.
 
-Without `HF_TOKEN` the container still works, with the Viggle-Animate workflow only (about 105 GB to download).
+Without `HF_TOKEN` the container still works, with the two Viggle-Animate workflows only (about 107 GB to download).
 
 ## Requirements
 
@@ -41,11 +43,11 @@ Without `HF_TOKEN` the container still works, with the Viggle-Animate workflow o
   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 - GPU memory decides which Viggle-Animate build is downloaded (`VIGGLE_VARIANT=auto`):
 
-  | GPU memory | Viggle-Animate build | Download: Viggle workflow only / all three |
+  | GPU memory | Viggle-Animate build | Download: Viggle workflows only / all four |
   |---|---|---|
-  | 80 GB or more (A100/H100 80 GB, RTX PRO 6000 96 GB) | full bf16 (66 GB) | ~105 GB / ~175 GB |
-  | 48 GB or more (A6000, L40S, RTX 6000 Ada) | int8 (47 GB) | ~86 GB / ~156 GB |
-  | less | pruned int8 (21 GB) | ~60 GB / ~130 GB |
+  | 80 GB or more (A100/H100 80 GB, RTX PRO 6000 96 GB) | full bf16 (66 GB) | ~107 GB / ~175 GB |
+  | 48 GB or more (A6000, L40S, RTX 6000 Ada) | int8 (47 GB) | ~88 GB / ~156 GB |
+  | less | pruned int8 (21 GB) | ~62 GB / ~130 GB |
 
   The thresholds are approximate: ComfyUI offloads what does not fit into GPU memory, which works but is slower.
   On the example clips the three builds give very similar results. LTX-2.5 (22B, bf16) needs about 48 GB of GPU
@@ -56,7 +58,7 @@ Without `HF_TOKEN` the container still works, with the Viggle-Animate workflow o
 
 | | |
 |---|---|
-| Workflows | All three take a driving video and a reference image. Step 1 paints your character into the video's first frame (Qwen-Image-2.1 + the Viggle turbo LoRA, after Qwen3-VL describes your picture). **Viggle-Animate (video + reference image)**: Viggle-Animate renders the whole video from that frame in 124-frame windows, with the soundtrack pinned for lip-sync. **LTX Ripple (video + reference image)**: LTX-2.5 + Ripple carries the edited frame through the video. **Viggle-Animate + LTX Ripple (character + scene)**: step 1 also changes the scene as you describe it; Viggle-Animate renders the character, Ripple the scene, and SAM 3.1 finds the character to composite it over Ripple's background. Each workflow has a note explaining its settings. |
+| Workflows | All four take a driving video and a reference image. Step 1 paints your character into the video's first frame (Qwen-Image-2.1 + the Viggle turbo LoRA, after Qwen3-VL describes your picture). **Viggle-Animate (video + reference image)**: Viggle-Animate renders the whole video from that frame in 124-frame windows, with the soundtrack pinned for lip-sync. **Viggle-Animate masked (replace one person)**: the same, but SAM 3.1 finds the person (you can say which one) and the new character, and only that area is laid over the video, so everything else stays as filmed. **LTX Ripple (video + reference image)**: LTX-2.5 + Ripple carries the edited frame through the video. **Viggle-Animate + LTX Ripple (character + scene)**: step 1 also changes the scene as you describe it; Viggle-Animate renders the character, Ripple the scene, and SAM 3.1 finds the character to composite it over Ripple's background. Each workflow has a note explaining its settings. |
 | Examples | 5 driving videos (3 with speech) and 6 characters, AI-generated (`examples/`), copied into ComfyUI's `input/` |
 | Nodes | [ComfyUI-Viggle-Animate-H3](https://github.com/Saganaki22/ComfyUI-Viggle-Animate-H3), the lip-sync nodes of this repository (`custom_nodes/ViggleAudioPin`), VideoHelperSuite, KJNodes, Crystools and KikoStats (GPU use in the menu bar) |
 | Base | Ubuntu 24.04, Python 3.12, PyTorch 2.11 (CUDA 12.8), ComfyUI 0.36 |
@@ -70,7 +72,7 @@ versions under another name.
 | Environment variable | Default | |
 |---|---|---|
 | `HF_TOKEN` | - | Hugging Face token. Needed for LTX-2.5 (accept its licence first); also raises download rate limits. |
-| `LTX` | `auto` | `auto`: LTX-2.5, Ripple and SAM 3.1 (and the two workflows that use them) when `HF_TOKEN` is set; `1` / `0` to force. |
+| `LTX` | `auto` | `auto`: LTX-2.5 and Ripple (and the two workflows that use them) when `HF_TOKEN` is set; `1` / `0` to force. |
 | `VIGGLE_VARIANT` | `auto` | `bf16`, `int8` or `pruned-int8`; `auto` picks by GPU memory. |
 | `DOWNLOAD_FIRST` | `0` | `1`: finish all downloads before ComfyUI starts. |
 | `PORT` | `8188` | ComfyUI's port inside the container. |
@@ -87,6 +89,7 @@ from the disk cache after the first run:
 | Workflow | Time |
 |---|---|
 | Viggle-Animate | 90-125 s (int8 build: 80 s, pruned int8: 60 s) |
+| Viggle-Animate masked | 85-130 s |
 | LTX Ripple | about 100 s |
 | Viggle-Animate + LTX Ripple | about 170 s |
 
@@ -97,8 +100,13 @@ from the disk cache after the first run:
 - Reference images: a full-body picture on a plain background works best. Animals, toys and drawings work too.
 - If the first frame is not right, add a sentence to the extra-instructions text box ("keep the hat", "the
   character holds the phone in the left hand") or change the seed; only the changed steps re-run.
-- Results are in `output/viggle/`, `output/ripple/` and `output/combined/`, each with a comparison video, with
-  the original soundtrack.
+- Results are in `output/viggle/`, `output/viggle_masked/`, `output/ripple/` and `output/combined/`, each with a
+  comparison video, with the original soundtrack.
+- Masked workflow: with several people in the video, say which one to replace in the first SAM text box ("woman
+  with curly hair"); if the new character is not a person, say what it is in the second ("fox", "robot"). Its
+  sampler's *keep background* switch (off by default) makes the model generate only inside the person's mask, with
+  seamless edges when the new character is like the person; a very different one then tends to stay half the
+  original person.
 - After a run ComfyUI keeps the last model in GPU memory (up to ~90 GB with the full builds), which makes the next
   run faster. On a GPU shared with other work, free it with
   `curl -X POST http://localhost:8188/free -H 'Content-Type: application/json' -d '{"unload_models": true, "free_memory": true}'`.
@@ -113,6 +121,8 @@ python3 tools/run_api.py --host http://localhost:8188 --video my_clip.mp4 --imag
 python3 tools/run_api.py --workflow ltx_ripple --video my_clip.mp4 --image my_character.png --extra "Keep the red scarf."
 python3 tools/run_api.py --workflow viggle_animate_ltx_ripple --video my_clip.mp4 --image my_character.png \
     --extra "Turn the room into a spaceship cabin with round windows."
+python3 tools/run_api.py --workflow viggle_animate_masked --video my_clip.mp4 --image my_character.png \
+    --person "man in a grey hoodie" --character knight
 ```
 
 The API graphs it sends are in `workflows/api/`; see ComfyUI's
@@ -159,6 +169,8 @@ enabled and run `python3 tools/build_workflows.py http://localhost:8188`.
 [Saganaki22](https://github.com/Saganaki22/ComfyUI-Viggle-Animate-H3) (the Viggle nodes),
 [Comfy-Org](https://huggingface.co/Comfy-Org) (ComfyUI and the repackaged weights), [Qwen](https://huggingface.co/Qwen),
 [Lightricks](https://huggingface.co/Lightricks) (LTX-2.5), [WepeNerd](https://huggingface.co/WepeNerd/LTX-Ripple)
-(LTX Ripple), [Meta](https://ai.meta.com/sam3/) (SAM 3.1), and the authors of VideoHelperSuite, KJNodes, Crystools and KikoStats. The idea of a ready-to-run
+(LTX Ripple), [Meta](https://ai.meta.com/sam3/) (SAM 3.1), the
+[MiniMax-H3 inpainting blocks](https://huggingface.co/diffusers-modular/minimax-h3-inpainting) and the
+"Viggle-Animate, masked" Space by linoyts (the idea behind the masked sampler), and the authors of VideoHelperSuite, KJNodes, Crystools and KikoStats. The idea of a ready-to-run
 ComfyUI image that fetches its models into a volume comes from community templates such as
 [HearmemanAI's](https://github.com/Hearmeman24); this repository uses none of their code.

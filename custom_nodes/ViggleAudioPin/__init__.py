@@ -10,14 +10,22 @@ soundtrack into the audio half of the latent and mask it.
 
   Viggle Audio Pin (H3)                 after Viggle-Animate Conditioning (H3), before the sampler
   Viggle Chunked Sampler (audio pinned) the windowed sampler, with the whole clip's soundtrack pinned
+  Viggle Chunked Sampler (masked)       the same, replacing only what a mask covers (one person, say)
 
 As in sample.py the soundtrack is cut to the rendered length plus one frame and padded with silence; it
 starts at the first rendered frame (`start_seconds` skips into it). Mux the original soundtrack into the
 saved video as usual: the model's audio is the pinned one back through the VAE.
 
+Masked: Viggle-Animate takes no mask, but the same mechanism holds video rows too. With `keep_background` on, each
+window's video rows are the driving clip's own latent and only the rows the mask covers are generated; the rest are
+clean conditioning, as the carried overlap between windows already is (the approach of the MiniMax-H3 inpainting
+pipeline, diffusers-modular/minimax-h3-inpainting). Viggle was not trained this way: for a change as large as a
+person into a very different one it tends to keep the original, half replaced. Off (the default), the whole frame is
+generated as without a mask, and the workflow composites the replaced person back through the mask.
+
 Licence: GPL-3.0 (this repository). ViggleChunkedSamplerAudioPin._sample_window is adapted from the window sampler
 of ComfyUI-Viggle-Animate-H3 (https://github.com/Saganaki22/ComfyUI-Viggle-Animate-H3, Copyright Saganaki22,
-Apache License 2.0); changed to mask the audio rows as clean instead of generated.
+Apache License 2.0); changed to mask the audio rows as clean instead of generated, and the video rows outside a mask.
 """
 import copy
 import hashlib
@@ -36,6 +44,26 @@ from comfy_extras import nodes_minimax_h3 as core_h3
 
 FPS = 24
 LATENTS_PER_SECOND = 40          # 32 kHz audio VAE, hop 800
+FRAMES_PER_LATENT = (1, 4, 4, 4, 4)    # MiniMax-H3 video VAE: 17-frame chunks -> 5 latent frames
+
+
+def mask_rows(mask, first_frame, latn, ch, cw):
+    """MASK [N, H, W] (1 = replace) -> video-row mask [1, 1, latn, ch/16, cw/16] for the window starting at pixel
+    frame `first_frame` (windows start on a 17-frame chunk boundary). A latent row is generated if the mask touches
+    any of its pixels in any of its frames; frames past the end of the mask repeat its last frame."""
+    m = mask.float()
+    if m.dim() == 2:
+        m = m[None]
+    rows, f = [], first_frame
+    for k in range(latn):
+        n = FRAMES_PER_LATENT[k % 5]
+        idx = torch.arange(f, f + n).clamp(max=m.shape[0] - 1)
+        rows.append(m[idx].amax(dim=0))
+        f += n
+    m = torch.stack(rows)[:, None]                                            # [latn, 1, H, W]
+    m = torch.nn.functional.interpolate(m, size=(ch, cw), mode="bilinear", align_corners=False)
+    m = torch.nn.functional.max_pool2d(m, 16)                                 # [latn, 1, ch/16, cw/16]
+    return (m > 0.5).float().permute(1, 0, 2, 3)[None]
 
 
 def encode_soundtrack(audio_vae, audio, n_latents, start_seconds=0.0):
@@ -120,13 +148,17 @@ class ViggleChunkedSamplerAudioPin:
     DESCRIPTION = "Chunked Viggle-Animate sampler with lip-sync: the soundtrack is pinned in every chunk."
 
     def sample(self, guider, sampler, sigmas, cond_set, vae, seed, rerender_chunk, rerender_seed,
-               audio_vae, audio, start_seconds, dynprompt=None, unique_id=None):
+               audio_vae, audio, start_seconds, mask=None, keep_background=True, dynprompt=None, unique_id=None):
         base_cls = self._base()
         base_mod = sys.modules[base_cls.__module__]
         inst = base_cls()
         total_a = round(int(cond_set["total_frames"]) / FPS * LATENTS_PER_SECOND)
         pinned = encode_soundtrack(audio_vae, audio, total_a, start_seconds)
-        digest = hashlib.sha256(pinned.cpu().numpy().tobytes()).digest()
+        h = hashlib.sha256(pinned.cpu().numpy().tobytes())
+        if mask is not None:                      # chunks rendered with another mask must not be reused either
+            h.update(b"keep" if keep_background else b"whole")
+            h.update((mask > 0.5).cpu().numpy().tobytes())
+        digest = h.digest()
         parent_render, parent_key = inst._render_chunk, inst._chunk_key
 
         def _render_chunk(self, noise, guider, sampler, sigmas, cond, seed_i, ch, cw, a, b, lat0, latn,
@@ -138,10 +170,20 @@ class ViggleChunkedSamplerAudioPin:
         def _sample_window(self, noise, guider, sampler, sigmas, cond, seed_i, ch, cw, a, b, carry, v, au):
             # the stock window sampler, with the audio rows masked 0 (pinned) instead of 1 (generated)
             latn = v.shape[2]
+            mask_v = torch.ones([1, 1, latn, ch // 16, cw // 16], device=v.device)
+            if mask is not None and keep_background:
+                # the video rows outside the mask: the driving clip's own latent, held like the carried overlap
+                footage = cond[0][1]["minimax_refs"][0]["latent"]
+                if tuple(footage.shape[2:]) != tuple(v.shape[2:]):
+                    raise ValueError("Viggle Chunked Sampler (masked): the driving clip and the canvas differ in size "
+                                     f"({tuple(footage.shape[2:])} vs {tuple(v.shape[2:])}); set Viggle-Animate "
+                                     "Conditioning's width and height to 0")
+                v = v.clone()
+                v[:, :, carry:] = footage[:, :, carry:].to(v.device, v.dtype)
+                mask_v = mask_rows(mask, a, latn, ch, cw).to(v.device)
+            mask_v[:, :, :carry] = 0.0
             samples = comfy.sample.fix_empty_latent_channels(guider.model_patcher,
                                                              comfy.nested_tensor.NestedTensor((v, au)))
-            mask_v = torch.ones([1, 1, latn, ch // 16, cw // 16], device=v.device)
-            mask_v[:, :, :carry] = 0.0
             mask_a = torch.zeros([1, 1, 1, au.shape[-1]], device=au.device)
             chunk_noise = copy.copy(noise)
             chunk_noise.seed = seed_i
@@ -166,7 +208,32 @@ class ViggleChunkedSamplerAudioPin:
                            dynprompt=dynprompt, unique_id=unique_id)
 
 
+class ViggleChunkedSamplerMasked(ViggleChunkedSamplerAudioPin):
+    """The lip-synced chunked sampler, replacing only what a mask covers."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        spec = super().INPUT_TYPES()
+        spec["required"]["mask"] = ("MASK", {"tooltip": "1 = replace (the person; from SAM 3.1, grown well past the "
+                                                        "outline). One mask per frame of the driving clip, at its "
+                                                        "size."})
+        spec["required"]["keep_background"] = (
+            "BOOLEAN", {"default": False,
+                        "tooltip": "Off (default): the whole frame is generated, as without a mask; composite it back "
+                                   "through the mask. On: only the masked area is generated and the rest of every "
+                                   "frame is held as the driving clip, which gives seamless edges when the new "
+                                   "character is like the person (similar build and clothing), but for a very "
+                                   "different one (another gender, a knight in armour) Viggle-Animate tends to keep "
+                                   "the original person, half replaced."})
+        return spec
+
+    DESCRIPTION = ("Chunked Viggle-Animate sampler with lip-sync that replaces only what the mask covers: the rest "
+                   "of the frame stays the driving clip.")
+
+
 NODE_CLASS_MAPPINGS = {"ViggleAudioPin": ViggleAudioPin,
-                       "ViggleChunkedSamplerAudioPin": ViggleChunkedSamplerAudioPin}
+                       "ViggleChunkedSamplerAudioPin": ViggleChunkedSamplerAudioPin,
+                       "ViggleChunkedSamplerMasked": ViggleChunkedSamplerMasked}
 NODE_DISPLAY_NAME_MAPPINGS = {"ViggleAudioPin": "Viggle Audio Pin (H3, lip-sync)",
-                              "ViggleChunkedSamplerAudioPin": "Viggle Chunked Sampler (audio pinned, lip-sync)"}
+                              "ViggleChunkedSamplerAudioPin": "Viggle Chunked Sampler (audio pinned, lip-sync)",
+                              "ViggleChunkedSamplerMasked": "Viggle Chunked Sampler (masked, lip-sync)"}

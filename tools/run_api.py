@@ -4,6 +4,8 @@ wait for it, download the results. Jobs from several people simply queue up on t
   python3 tools/run_api.py --video clip.mp4 --image character.png
   python3 tools/run_api.py --host http://gpu-box:8188 --video clip.mp4 --image character.png \
       --workflow ltx_ripple --extra "Keep the red scarf." --seed 7 --out results/
+  python3 tools/run_api.py --video clip.mp4 --image character.png --workflow viggle_animate_masked \
+      --person "man in a grey hoodie" --character knight
 
 Standard library only (Python 3.8+).
 """
@@ -40,8 +42,17 @@ def main():
     ap.add_argument("--host", default="http://localhost:8188")
     ap.add_argument("--video", required=True, help="driving video (its soundtrack drives the lip-sync)")
     ap.add_argument("--image", required=True, help="the character to put in")
-    ap.add_argument("--workflow", default="viggle_animate", choices=["viggle_animate", "ltx_ripple", "viggle_animate_ltx_ripple"],
-                    help="viggle_animate (default), ltx_ripple, or both combined (character + scene)")
+    ap.add_argument("--workflow", default="viggle_animate",
+                    choices=["viggle_animate", "viggle_animate_masked", "ltx_ripple", "viggle_animate_ltx_ripple"],
+                    help="viggle_animate (default); viggle_animate_masked (replace one person, keep the rest of the "
+                         "frame); ltx_ripple; or both combined (character + scene)")
+    ap.add_argument("--person", default=None,
+                    help="masked workflow: who to replace, as SAM 3.1 should look for them (default: person)")
+    ap.add_argument("--character", default=None,
+                    help="masked workflow: what SAM 3.1 looks for in the render, the new character (default: person)")
+    ap.add_argument("--keep-background", action="store_true",
+                    help="masked workflow: generate only inside the mask (seamless edges for a character like the "
+                         "person; a very different one may come out half replaced)")
     ap.add_argument("--extra", default=None, help="extra instructions for the first-frame edit (combined workflow: "
                                                   "the scene change; default: the workflow's own)")
     ap.add_argument("--seed", type=int, default=None)
@@ -61,8 +72,16 @@ def main():
             inp["image"] = image
         elif cls == "PrimitiveStringMultiline" and a.extra is not None:
             inp["value"] = a.extra
-        elif a.seed is not None and cls in ("RandomNoise", "ViggleChunkedSamplerAudioPin"):
+        elif a.seed is not None and cls in ("RandomNoise", "ViggleChunkedSamplerAudioPin", "ViggleChunkedSamplerMasked"):
             inp["noise_seed" if cls == "RandomNoise" else "seed"] = a.seed
+        if cls == "ViggleChunkedSamplerMasked" and a.keep_background:
+            inp["keep_background"] = True
+    for node in graph.values():                  # what SAM 3.1 looks for: the person in the clip, the character after
+        if node["class_type"] == "SAM3_Detect":
+            on_clip = graph[node["inputs"]["image"][0]]["class_type"] == "ImageScaleToTotalPixels"
+            text = a.person if on_clip else a.character
+            if text is not None:
+                graph[node["inputs"]["conditioning"][0]]["inputs"]["text"] = text
     # the installed Viggle variant may differ from the file name in the graph: use what the server has
     models = json.load(_open(host + "/models/diffusion_models"))
     viggle = [m for m in models if "ref2va_viggle" in m]

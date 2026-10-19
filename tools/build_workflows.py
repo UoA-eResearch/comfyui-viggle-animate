@@ -152,9 +152,9 @@ def ripple_branch(g, frames, edited, n, seed=123463, strength=1.35):
     return g.add("VAEDecode", samples=out(crop, 2), vae=out(vae))
 
 
-def viggle_branch(g, frames, frame, video, seed=42):
+def viggle_branch(g, frames, frame, video, seed=42, mask=None):
     """Viggle-Animate on `frames` (the driving clip at ~0.4 MP) with the repainted first frame `frame`, lip-synced
-    to the clip's soundtrack. Returns the rendered frames."""
+    to the clip's soundtrack; with `mask`, only what the mask covers is generated. Returns the rendered frames."""
     m = g.add("UNETLoader", unet_name=VIGGLE_MODEL, weight_dtype="default")
     m = g.add("LoraLoaderModelOnly", model=out(m), lora_name=VIGGLE_LORA, strength_model=1.0)
     m = g.add("MiniMaxH3SigmaShift", model=out(m), shift_video=3.0, shift_audio=3.0)
@@ -163,14 +163,51 @@ def viggle_branch(g, frames, frame, video, seed=42):
     avae = g.add("VAELoader", vae_name=AUDIO_VAE)
     cond = g.add("ViggleAnimateConditioningWindowed", cond_video=frames, ref_image=frame, text_cond=out(tc),
                  vae=out(vvae), width=0, height=0, chunk_frames=124, overlap_frames=22)
-    rendered = g.add("ViggleChunkedSamplerAudioPin",
+    masked = {} if mask is None else {"mask": mask, "keep_background": False}
+    rendered = g.add("ViggleChunkedSamplerMasked" if masked else "ViggleChunkedSamplerAudioPin",
                      guider=out(g.add("BasicGuider", model=out(m), conditioning=out(cond, 1))),
                      sampler=out(g.add("KSamplerSelect", sampler_name="euler")),
                      sigmas=out(g.add("ManualSigmas", sigmas=VIGGLE_SIGMAS)), cond_set=out(cond), vae=out(vvae),
                      seed=seed, rerender_chunk=0, rerender_seed=0, audio_vae=out(avae), audio=out(video, 2),
-                     start_seconds=0.0)
+                     start_seconds=0.0, **masked)
     # the sampler renders whole windows: back to the clip's own frame count
     return g.add("ImageFromBatch", image=out(rendered), batch_index=0, length=out(video, 1))
+
+
+def viggle_masked(driver="talking_bench.mp4", reference="wizard.jpg", seed=42, person="person", character="person"):
+    """Viggle-Animate replacing one person and nothing else: SAM 3.1 finds the person (`person` says who) and
+    Viggle-Animate renders the clip with the masked sampler; SAM then finds the new character in the render
+    (`character`), and the render is composited onto the driving clip through both masks, so the rest of every frame
+    is the clip's own pixels."""
+    g = G()
+    video = load_video(g, driver)
+    frame = repaint_first_frame(g, video, out(g.add("LoadImage", image=reference)))
+    small = to_lowres(g, video)
+    sam = g.add("CheckpointLoaderSimple", ckpt_name=SAM_MODEL)
+    found = g.add("SAM3_Detect", model=out(sam), image=out(small), conditioning=out(
+        g.add("CLIPTextEncode", text=person, clip=out(sam, 1))), threshold=0.35, refine_iterations=1,
+        individual_masks=False)
+    # grown well past the outline, hard (the model repaints whole 16 px blocks)
+    hard = g.add("GrowMaskWithBlur", mask=out(found), expand=24, incremental_expandrate=0.0, tapered_corners=True,
+                 flip_input=False, blur_radius=0.0, lerp_alpha=1.0, decay_factor=1.0, fill_holes=True)
+    hard = out(g.add("VRAM_Debug", any_input=out(hard), image_pass=frame, empty_cache=True, gc_collect=True,
+                     unload_all_models=True), 0)
+    result = viggle_branch(g, out(small), frame, video, seed, mask=hard)
+    after_v = g.add("VRAM_Debug", any_input=out(result), image_pass=out(result), empty_cache=True, gc_collect=True,
+                    unload_all_models=True)
+    # the new character can reach past the person's outline (a cape, a hat): its own mask is added
+    new = g.add("SAM3_Detect", model=out(sam), image=out(after_v, 1), conditioning=out(
+        g.add("CLIPTextEncode", text=character, clip=out(sam, 1))), threshold=0.35, refine_iterations=1,
+        individual_masks=False)
+    both = g.add("MaskComposite", destination=hard, source=out(new), x=0, y=0, operation="or")
+    soft = g.add("GrowMaskWithBlur", mask=out(both), expand=8, incremental_expandrate=0.0, tapered_corners=True,
+                 flip_input=False, blur_radius=4.0, lerp_alpha=1.0, decay_factor=1.0, fill_holes=True)
+    result = g.add("ImageCompositeMasked", destination=out(small), source=out(after_v, 1), x=0, y=0,
+                   resize_source=False, mask=out(soft))
+    save(g, result, video, "viggle_masked/result")
+    side = g.add("ImageConcanate", image1=out(small), image2=out(result), direction="right", match_image_size=True)
+    save(g, side, video, "viggle_masked/side_by_side")
+    return g
 
 
 def to_lowres(g, video):
@@ -330,7 +367,7 @@ STEPS = """1. **Load Video**: the driving clip, read at 24 fps. Examples: `talki
    instructions box (the empty text box) or change the seed and queue again: only the changed parts re-run."""
 SHARED = ("If this ComfyUI is shared, everyone using it can see what is uploaded and rendered, and jobs run one at a "
           "time in one queue. Only use footage of people who agreed to it, and label the results as AI-generated "
-          "when you publish them. Results are in `output/viggle/` and `output/ripple/`.")
+          "when you publish them. Results are in `output/viggle/`, `output/viggle_masked/` and `output/ripple/`.")
 NOTE_VIGGLE = f"""## Viggle-Animate: put a character from a picture into a video
 
 {STEPS}
@@ -340,6 +377,24 @@ NOTE_VIGGLE = f"""## Viggle-Animate: put a character from a picture into a video
 The clip is scaled to about 0.4 MP, the size Viggle-Animate was trained at. With the models loaded a 5 s clip
 takes about a minute on an RTX PRO 6000; loading takes a minute or two the first time. Identity or light can
 drift between windows on long clips. {SHARED}"""
+NOTE_MASKED = f"""## Viggle-Animate, masked: replace one person, keep everything else
+
+The same two inputs as the Viggle-Animate workflow, but only the person is replaced: SAM 3.1 finds them in the
+clip, Viggle-Animate renders the new character, SAM finds the character in the render, and only that area is laid
+over the driving clip. The rest of every frame, other people included, stays exactly as filmed. Useful for footage
+whose surroundings must not change.
+
+{STEPS}
+4. **Who to replace:** the first text box under the SAM loader (`person`). With several people in the clip,
+   describe the one to replace ("woman with curly hair", "man in a grey hoodie"). The second box (`person`) is what
+   SAM looks for in the render: the new character ("knight", "robot", "fox" if it is not a person).
+5. Step 2 renders the clip in 124-frame windows, lip-synced to the soundtrack, and composites the character back.
+
+**Keep background** (on the masked sampler) is off by default: Viggle-Animate renders the whole frame as usual and
+only the masked area is used. On, the model sees the real clip around the mask and only generates inside it, which
+gives seamless edges when the new character is like the person (similar build and clothing); for a very different
+one it tends to keep the original person, half replaced. If edges of the original person show, grow the first mask
+(*Grow Mask With Blur*, 24 px). {SHARED}"""
 NOTE_RIPPLE = f"""## LTX Ripple: the same two inputs, with LTX-2.5 and the LTX Ripple IC-LoRA
 
 [LTX Ripple](https://huggingface.co/WepeNerd/LTX-Ripple) carries an edit of a video's *first* frame through the
@@ -375,6 +430,7 @@ def main(host):
     api = os.path.join(wf, "api")
     os.makedirs(api, exist_ok=True)
     for name, g, note in (("Viggle-Animate (video + reference image)", viggle(), NOTE_VIGGLE),
+                          ("Viggle-Animate masked (replace one person)", viggle_masked(), NOTE_MASKED),
                           ("LTX Ripple (video + reference image)", ripple(), NOTE_RIPPLE),
                           ("Viggle-Animate + LTX Ripple (character + scene)", combined(), NOTE_COMBINED)):
         with open(os.path.join(wf, name + ".json"), "w") as f:

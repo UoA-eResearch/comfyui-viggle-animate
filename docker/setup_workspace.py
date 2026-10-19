@@ -72,10 +72,10 @@ def ltx_access():
 
 def plan():
     variant, gb = viggle_variant()
-    groups = ["viggle", "qwen"]
+    groups = ["viggle", "qwen", "sam"]        # SAM 3.1 finds the person (masked and combined workflows)
     if ltx_wanted():
         if ltx_access():
-            groups += ["ltx", "sam"]              # SAM 3.1 is used by the combined workflow only
+            groups += ["ltx"]
     else:
         log("LTX Ripple is off (set HF_TOKEN, after accepting the LTX-2.5 licence, to add it).")
     state = {"viggle_variant": variant, "groups": groups}
